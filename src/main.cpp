@@ -9,14 +9,8 @@
 #include <WiFiUdp.h>
 #include <NimBLEDevice.h>
 
-/*
-const char *ssid = "catpiss";
-const char *password = "SmellsLikeUrine1";
-const char *mqtt_server = "192.168.199.33";
-const char *mqtt_username = "test";
-const char *mqtt_pass = "asscrack99";
-const int mqtt_port = 1883;
-*/
+#include "esp_sntp.h"
+
 
 const char *ssid = WIFI_SSID;
 const char *password = WIFI_PASSWORD;
@@ -24,6 +18,10 @@ const char *mqtt_server = MQTT_SERVER;
 const char *mqtt_username = MQTT_USER;
 const char *mqtt_pass = MQTT_PASSWORD;
 const int mqtt_port = MQTT_PORT;
+
+const char* ntpServer = "192.168.199.33";
+const long  gmtOffset_sec = -28800;
+const int   daylightOffset_sec = 3600;
 
 #include "main.h"
 
@@ -42,6 +40,35 @@ NimBLERemoteCharacteristic* writeChr = nullptr;
 
 NimBLERemoteDescriptor*     pDsc = nullptr;
 
+unsigned long previousMillis = 0;
+
+unsigned long getTime() {
+  time_t now;
+  struct tm timeinfo;
+  // getLocalTime will wait for the first successful sync
+  if (!getLocalTime(&timeinfo)) { // `timeinfo` is a struct tm variable
+      Serial.println("Failed to obtain time");
+      return 0;
+  }
+  time(&now); // Fills 'now' with the current Unix timestamp
+  return now;
+}
+
+
+void notify(struct timeval* t) {
+  Serial.println("synchronized");
+}
+
+
+void initSNTP() {  
+  sntp_set_sync_interval(1 * 60 * 60 * 1000UL);  // 1 hour
+  sntp_set_time_sync_notification_cb(notify);
+  esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+  esp_sntp_setservername(0, "192.168.199.33");
+  esp_sntp_init();
+  setenv("TZ", "PST8PDT,M3.2.0,M11.1.0",1);
+  tzset();
+}
 
 
 
@@ -125,9 +152,9 @@ class ScanCallbacks : public NimBLEScanCallbacks {
         Serial.printf("Advertised Device found: %s RPA: %s\n", advertisedDevice->toString().c_str(),advertisedDevice->getAddress().isRpa() ? "Yes" : "No");
 		client.publish("ble/scan",advertisedDevice->toString().c_str());
 		if (advertisedDevice->haveName() && advertisedDevice->getName() == "PBL2-8813BF7276E8" && !advertisedDevice->getAddress().isRpa()) {
-		//std::string add = "35:3f:0b:8a:bb:05";
-		//std::string add1 = "6c:7e:67:c6:9e:3f";
-		//if (advertisedDevice->getAddress().equals(NimBLEAddress(add,BLE_ADDR_RANDOM))) {
+			//std::string add = "35:3f:0b:8a:bb:05";
+			//std::string add1 = "6c:7e:67:c6:9e:3f";
+			//if (advertisedDevice->getAddress().equals(NimBLEAddress(add,BLE_ADDR_RANDOM))) {
 			Serial.printf("Found Our Service\n");
 			/** stop scan before connecting */
 			NimBLEDevice::getScan()->stop();
@@ -161,33 +188,35 @@ void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData,
 	z = hexToAscii(data);
 	char txtbuf[256];
 
+	unsigned long epochTime = getTime();
+
 
 	if (data[3] == 'B') {
-		/*
         ESP_LOGD("ble_client_lambda","Status Packet B");
-        id(burner).publish_state(z[35] == 1);
-        id(auger).publish_state(z[36] == 1);
-        id(power).publish_state(z[24] == 1);
-        id(nopellets).publish_state(z[32] == 1);
-        id(probeTemp).publish_state(calculateTemp(z,5));
-        id(grillTemp).publish_state(calculateTemp(z,17));
+		/*
+		  id(burner).publish_state(z[35] == 1);
+		  id(auger).publish_state(z[36] == 1);
+		  id(power).publish_state(z[24] == 1);
+		  id(nopellets).publish_state(z[32] == 1);
+		  id(probeTemp).publish_state(calculateTemp(z,5));
+		  id(grillTemp).publish_state(calculateTemp(z,17));
 		*/
-		sprintf(txtbuf,"{\"Igniter\": %i, \"Auger\": %i, \"Nopellets\": %i, \"Power\": %i, \"RSSI\": %d \n",z[35] == 1, z[36] == 1,z[32] == 1,z[24] == 1, pRemoteCharacteristic->getClient()->getRssi());
+		sprintf(txtbuf,"{\"Timestamp\": %u, \"Igniter\": %i, \"Auger\": %i, \"Nopellets\": %i, \"Power\": %i, \"RSSI\": %d } \n", epochTime, z[35] == 1, z[36] == 1,z[32] == 1,z[24] == 1, pRemoteCharacteristic->getClient()->getRssi());
 		client.publish("homeassistant/sensor/smoker01/status",txtbuf);
 		Serial.printf("JSON: %s\n",txtbuf);	  
 
-      }
+	}
 	if (data[3] == 'C') {
 		Serial.println("Status Packet C");
 		Serial.printf("Grillset %i\n",calculateTemp(z,20));
 		Serial.printf("GrillTemp %i\n",calculateTemp(z,23));
 		Serial.printf("ProbeTemp %i\n",calculateTemp(z,5));
 		
-		sprintf(txtbuf,"{\"Setpoint\": %i, \"CurrentTemp\": %i, \"ProbeTemp\": %i}\n",calculateTemp(z,20),calculateTemp(z,23),calculateTemp(z,5));
+		sprintf(txtbuf,"{\"Timestamp\": %u, \"Setpoint\": %i, \"CurrentTemp\": %i, \"ProbeTemp\": %i}\n",epochTime, calculateTemp(z,20),calculateTemp(z,23),calculateTemp(z,5));
 		client.publish("homeassistant/sensor/smoker01/temps",txtbuf);
 		Serial.printf("JSON: %s\n",txtbuf);	  
 	}
- /*
+	/*
 	  sprintf(txtbuf,"%i",setPoint);
 	  client.publish("homeassistant/sensor/smoker01/setpoint",txtbuf);
 	  sprintf(txtbuf,"%i",meatTemp);
@@ -195,17 +224,17 @@ void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData,
 	  sprintf(txtbuf,"%i",currTemp);
 	  client.publish("homeassistant/sensor/smoker01/currtemp",txtbuf);
 	  if (heaterState == false) {
-		  client.publish("homeassistant/sensor/smoker01/heater","OFF");
+	  client.publish("homeassistant/sensor/smoker01/heater","OFF");
 	  } else {
-		  client.publish("homeassistant/sensor/smoker01/heater","ON");
+	  client.publish("homeassistant/sensor/smoker01/heater","ON");
 	  }
 	  if (heaterEnable == true) {
-		  client.publish("homeassistant/sensor/smoker01/enable","TRUE");
+	  client.publish("homeassistant/sensor/smoker01/enable","TRUE");
 	  } else {
-		  client.publish("homeassistant/sensor/smoker01/enable","FALSE");
+	  client.publish("homeassistant/sensor/smoker01/enable","FALSE");
 	  }
 	  
-  */  
+	*/  
 	  
 
 	
@@ -320,66 +349,66 @@ bool connectToServer() {
 
 
 void mqttConnect() {
-  client.setServer(mqtt_server, mqtt_port);
-  client.connect("smokerproxy", mqtt_username, mqtt_pass);
-  client.subscribe("smokerproxy/set");
-  client.subscribe("smokerproxy/heaterctl");
-  //client.setCallback(mqttcallback);
+	client.setServer(mqtt_server, mqtt_port);
+	client.connect("smokerproxy", mqtt_username, mqtt_pass);
+	client.subscribe("smokerproxy/set");
+	client.subscribe("smokerproxy/heaterctl");
+	//client.setCallback(mqttcallback);
 }
 
 void initWiFi() {
-  int i = 0;
-  pinMode(4, OUTPUT);
+	int i = 0;
+	pinMode(4, OUTPUT);
 
-  analogWrite(4, 50);
-  long wifistart = 0;
+	analogWrite(4, 50);
+	long wifistart = 0;
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setHostname("smokerproxy");
-  WiFi.begin(ssid, password);
-  Serial.printf("Connecting to WiFi .. SSID %s  PASS %s\n",ssid,password);
-  wifistart = millis();
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print(".");
-	if (i) { 
-		analogWrite(4, 0);
-	} else {
-		analogWrite(4, 10);
+	WiFi.mode(WIFI_STA);
+	WiFi.setHostname("smokerproxy");
+	WiFi.begin(ssid, password);
+	Serial.printf("Connecting to WiFi .. SSID %s  PASS %s\n",ssid,password);
+	wifistart = millis();
+	while (WiFi.status() != WL_CONNECTED) {
+		Serial.print(".");
+		if (i) { 
+			analogWrite(4, 0);
+		} else {
+			analogWrite(4, 10);
+		}
+		i = !i;
+		delay(1000);
+		if (millis() - wifistart > 8000) {
+			Serial.print("Failed to connect to wifi.  Restarting.");
+			ESP.restart();
+		}
 	}
-	i = !i;
-    delay(1000);
-    if (millis() - wifistart > 8000) {
-    Serial.print("Failed to connect to wifi.  Restarting.");
-     ESP.restart();
-    }
-  }
-  ArduinoOTA.setHostname("smokerproxy");
-  analogWrite(4, 0);
+	ArduinoOTA.setHostname("smokerproxy");
+	analogWrite(4, 0);
 
   
-  ArduinoOTA
-      .onStart([]() {
-        String type;
-        if (ArduinoOTA.getCommand() == U_FLASH)
-          type = "sketch";
-        else // U_SPIFFS
-          type = "filesystem";
+	ArduinoOTA
+		.onStart([]() {
+			String type;
+			if (ArduinoOTA.getCommand() == U_FLASH)
+				type = "sketch";
+			else // U_SPIFFS
+				type = "filesystem";
 
-        Serial.println("Start updating " + type);
-      })
-      .onEnd([]() { Serial.println("\nEnd"); })
-      .onProgress([](unsigned int progress, unsigned int total) {
-        char txtbuf[20];
-        sprintf(txtbuf, "Progress: %u%%\r", (progress / (total / 100)));
-      })
-      .onError([](ota_error_t error) {
-        Serial.printf("Error[%u]: ", error);
-          Serial.println("End Failed");
-      });
+			Serial.println("Start updating " + type);
+		})
+		.onEnd([]() { Serial.println("\nEnd"); })
+		.onProgress([](unsigned int progress, unsigned int total) {
+			char txtbuf[20];
+			sprintf(txtbuf, "Progress: %u%%\r", (progress / (total / 100)));
+		})
+		.onError([](ota_error_t error) {
+			Serial.printf("Error[%u]: ", error);
+			Serial.println("End Failed");
+		});
 
-  ArduinoOTA.begin();
+	ArduinoOTA.begin();
 
-  server.begin();
+	server.begin();
 
 
   
@@ -388,8 +417,8 @@ void initWiFi() {
 
 
 void setup() {
-  Serial.begin(115200);
-Serial.printf("Boot\n");
+	Serial.begin(115200);
+	Serial.printf("Boot\n");
 
     NimBLEDevice::init("NimBLE-Client");
 
@@ -406,11 +435,15 @@ Serial.printf("Boot\n");
  
   
 
-  initWiFi();
+	initWiFi();
 
-  mqttConnect();
+	initSNTP();
+	
+	mqttConnect();
 
-     pScan->setActiveScan(true);
+	//printLocalTime();
+	
+	pScan->setActiveScan(true);
 
     /** Start scanning for advertisers */
     pScan->start(scanTimeMs);
@@ -422,26 +455,49 @@ Serial.printf("Boot\n");
 
 void loop() {
 
-  ArduinoOTA.handle();
-  WiFiClient httpclient = server.available();
-  client.loop();
-  delay(10);
+	unsigned long currentMillis = millis();
 
-  if (doConnect) {
-	  doConnect = false;
-	  /** Found a device we want to connect to, do it now */
-	  if (connectToServer()) {
-		  Serial.printf("Success! we should now be getting notifications, scanning for more!\n");
-		  if (0 && writeChr->canWrite()) {
-			  Serial.println("Writing!");
-			  writeChr->writeValue("FE0501020202FF");
-		  };
-	  } else {
-		  Serial.printf("Failed to connect, starting scan\n");
-	  }
-  }
+	ArduinoOTA.handle();
+	WiFiClient httpclient = server.available();
+	client.loop();
 
-  //NimBLEDevice::getScan()->start(scanTimeMs);
+	// Update system time every 15 minutes
+	/*
+	if (currentMillis - previousMillis >= 5000) {
+		previousMillis = millis();
+		Serial.println(getTime());
+	}
+	*/
+
+	
+	if (WiFi.status() != WL_CONNECTED) {
+		Serial.printf("Lost wifi connection.  Restarting\n");
+		ESP.restart();
+	}
+
+	if (!client.connected()) {
+		Serial.printf("Lost MQTT connection.  Restarting\n");
+		ESP.restart();
+	}
+	 
+	  
+	delay(10);
+
+	if (doConnect) {
+		doConnect = false;
+		/** Found a device we want to connect to, do it now */
+		if (connectToServer()) {
+			Serial.printf("Success! we should now be getting notifications, scanning for more!\n");
+			if (0 && writeChr->canWrite()) {
+				Serial.println("Writing!");
+				writeChr->writeValue("FE0501020202FF");
+			};
+		} else {
+			Serial.printf("Failed to connect, starting scan\n");
+		}
+	}
+
+	//NimBLEDevice::getScan()->start(scanTimeMs);
 
  
 }
